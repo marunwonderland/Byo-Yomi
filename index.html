@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>株式秒読み</title>
+  <meta name="description" content="東京・NY市場の寄り・引けを将棋の秒読みでカウントダウン">
+  <meta name="theme-color" content="#0f0f0f">
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="株式秒読み">
+
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --bg2: #1a1a1a;
+      --bg3: #242424;
+      --border: rgba(255,255,255,0.08);
+      --text: #f0f0f0;
+      --muted: #888;
+      --hint: #555;
+      --accent: #e8e8e8;
+      --red: #e24b4a;
+      --amber: #d4930a;
+      --green: #1d9e75;
+      --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif; }
+
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+
+    /* Header */
+    .header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px 12px; border-bottom: 0.5px solid var(--border); }
+    .header-title { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
+    .header-time { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 6px; padding: 12px 20px; border-bottom: 0.5px solid var(--border); }
+    .tab { flex: 1; padding: 9px 0; border: 0.5px solid var(--border); border-radius: 8px; background: transparent; cursor: pointer; font-size: 13px; color: var(--muted); transition: all 0.15s; font-family: inherit; }
+    .tab.active { background: var(--bg3); color: var(--text); border-color: rgba(255,255,255,0.2); }
+
+    /* Main countdown */
+    .main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 20px; }
+    .event-label { font-size: 13px; color: var(--muted); margin-bottom: 8px; letter-spacing: 0.05em; text-transform: none; }
+    .event-name { font-size: 18px; font-weight: 600; margin-bottom: 28px; }
+
+    .countdown-wrap { position: relative; margin-bottom: 20px; }
+    .countdown { font-family: var(--font-mono); font-size: clamp(56px, 16vw, 96px); font-weight: 400; letter-spacing: 0.05em; color: var(--accent); transition: color 0.25s; line-height: 1; }
+    .countdown.warning { color: var(--amber); }
+    .countdown.urgent { color: var(--red); }
+
+    .sekiyomi { min-height: 52px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+    .sekiyomi-num { font-family: var(--font-mono); font-size: 40px; font-weight: 600; color: var(--red); animation: pulse 0.4s ease-out; }
+    @keyframes pulse { 0% { transform: scale(1.3); opacity: 0.6; } 100% { transform: scale(1); opacity: 1; } }
+
+    .status-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--hint); }
+    .dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.soon { background: var(--amber); }
+    .dot.urgent-dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    .status-text { font-size: 12px; color: var(--muted); }
+
+    /* Session list */
+    .sessions { padding: 0 20px 20px; display: flex; flex-direction: column; gap: 8px; }
+    .session-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 0.5px solid var(--border); border-radius: 10px; background: var(--bg2); }
+    .session-card.next { border-color: rgba(255,255,255,0.2); background: var(--bg3); }
+    .session-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--hint); }
+    .session-dot.open { background: var(--green); }
+    .session-dot.soon { background: var(--amber); }
+    .session-dot.next { background: var(--red); }
+    .session-info { flex: 1; }
+    .session-name { font-size: 13px; font-weight: 500; }
+    .session-time { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
+    .session-remain { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+    .badge { font-size: 10px; padding: 2px 8px; border-radius: 99px; border: 0.5px solid; }
+    .badge-soon { color: var(--amber); border-color: var(--amber); }
+    .badge-open { color: var(--green); border-color: var(--green); }
+    .badge-done { color: var(--hint); border-color: var(--hint); }
+
+    /* Sound toggle */
+    .footer { padding: 12px 20px 20px; display: flex; align-items: center; justify-content: space-between; border-top: 0.5px solid var(--border); }
+    .sound-label { font-size: 12px; color: var(--muted); }
+    .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .toggle-track { width: 36px; height: 20px; background: var(--bg3); border: 0.5px solid var(--border); border-radius: 10px; position: relative; transition: background 0.2s; }
+    .toggle-track.on { background: var(--green); border-color: var(--green); }
+    .toggle-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: var(--text); border-radius: 50%; transition: transform 0.2s; }
+    .toggle-track.on .toggle-knob { transform: translateX(16px); }
+
+    .install-btn { display: none; padding: 7px 14px; border: 0.5px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; font-family: inherit; }
+    .install-btn.visible { display: block; }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-title">株式秒読み</div>
+  <div class="header-time" id="clock">--:--:--</div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" id="tab-tse" onclick="setMarket('tse')">東京証券取引所</button>
+  <button class="tab" id="tab-us" onclick="setMarket('us')">NYSE / NASDAQ</button>
+</div>
+
+<div class="main">
+  <div class="event-label">次のイベントまで</div>
+  <div class="event-name" id="event-name">読み込み中...</div>
+  <div class="countdown-wrap">
+    <div class="countdown" id="countdown">--:--</div>
+  </div>
+  <div class="sekiyomi" id="sekiyomi-wrap"></div>
+  <div class="status-row">
+    <div class="dot" id="status-dot"></div>
+    <div class="status-text" id="status-text"></div>
+  </div>
+</div>
+
+<div class="sessions" id="sessions"></div>
+
+<div class="footer">
+  <div class="toggle" onclick="toggleSound()">
+    <div class="toggle-track on" id="sound-track"><div class="toggle-knob"></div></div>
+    <div class="sound-label">秒読み音声</div>
+  </div>
+  <button class="install-btn" id="install-btn" onclick="installPWA()">ホーム画面に追加</button>
+</div>
+
+<script>
+const MARKETS = {
+  tse: {
+    tz: 'Asia/Tokyo', label: 'JST',
+    sessions: [
+      { name: '前場 寄り',  h: 9,  m: 0,  type: 'open'  },
+      { name: '前場 引け',  h: 11, m: 30, type: 'close' },
+      { name: '後場 寄り',  h: 12, m: 30, type: 'open'  },
+      { name: '後場 引け',  h: 15, m: 30, type: 'close' },
+    ]
+  },
+  us: {
+    tz: 'America/New_York', label: 'ET',
+    sessions: [
+      { name: 'プレマーケット開始', h: 4,  m: 0,  type: 'open'  },
+      { name: '寄り (Open)',        h: 9,  m: 30, type: 'open'  },
+      { name: '引け (Close)',       h: 16, m: 0,  type: 'close' },
+      { name: 'アフターアワー終了', h: 20, m: 0,  type: 'close' },
+    ]
+  }
+};
+
+let market = 'tse';
+let soundOn = true;
+let lastSpoken = -1;
+let audioCtx = null;
+let deferredPrompt = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  document.getElementById('install-btn').classList.add('visible');
+});
+
+function installPWA() {
+  if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt = null; }
+}
+
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function beep(freq, dur) {
+  try {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.connect(g); g.connect(ctx.destination);
+    osc.type = 'sine'; osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.18, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  } catch(e) {}
+}
+
+function speak(text) {
+  if (!soundOn || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'ja-JP'; u.rate = 1.1;
+  window.speechSynthesis.speak(u);
+}
+
+function nowInTZ(tz) {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+}
+
+function nowSec(tz) {
+  const d = nowInTZ(tz);
+  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+}
+
+function fmt(sec) {
+  if (sec < 0) sec = 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const mm = String(m).padStart(2,'0');
+  const ss = String(s).padStart(2,'0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function setMarket(m) {
+  market = m;
+  lastSpoken = -1;
+  document.getElementById('tab-tse').className = 'tab' + (m==='tse'?' active':'');
+  document.getElementById('tab-us').className = 'tab' + (m==='us'?' active':'');
+  update();
+}
+
+function toggleSound() {
+  soundOn = !soundOn;
+  document.getElementById('sound-track').className = 'toggle-track' + (soundOn?' on':'');
+}
+
+function update() {
+  const cfg = MARKETS[market];
+  const now = nowInTZ(cfg.tz);
+  const sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
+
+  // Clock
+  document.getElementById('clock').textContent =
+    now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})
+    + ' ' + cfg.label;
+
+  // Find next event
+  let next = null, minDiff = Infinity;
+  for (const s of cfg.sessions) {
+    const t = s.h*3600 + s.m*60;
+    const diff = t - sec;
+    if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+  }
+
+  const cd = document.getElementById('countdown');
+  const seki = document.getElementById('sekiyomi-wrap');
+  const dot = document.getElementById('status-dot');
+  const stxt = document.getElementById('status-text');
+
+  if (next) {
+    const d = next.diff;
+    document.getElementById('event-name').textContent = next.name;
+    cd.textContent = fmt(d);
+    cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
+
+    if (d <= 10 && d > 0) {
+      seki.innerHTML = `<div class="sekiyomi-num" key="${d}">${d}</div>`;
+      if (d !== lastSpoken) {
+        lastSpoken = d;
+        if (soundOn) { speak(String(d)); beep(d===1?880:660, 0.12); }
+      }
+    } else if (d === 0) {
+      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'寄り！':'引け！'}</div>`;
+      if (lastSpoken !== 0) {
+        lastSpoken = 0;
+        if (soundOn) { speak(next.type==='open'?'寄り！':'引け！'); beep(1100,0.4); }
+      }
+    } else {
+      seki.innerHTML = '';
+      if (d > 10) lastSpoken = -1;
+    }
+
+    dot.className = 'dot' + (d<=10?' urgent-dot':d<=900?' soon':' active');
+    stxt.textContent = d<=10 ? '秒読み中' : d<=900 ? 'まもなく' : '待機中';
+  } else {
+    document.getElementById('event-name').textContent = '本日のセッション終了';
+    cd.textContent = '--:--'; cd.className = 'countdown';
+    seki.innerHTML = '';
+    dot.className = 'dot'; stxt.textContent = '終了';
+  }
+
+  // Sessions list
+  const list = document.getElementById('sessions');
+  list.innerHTML = '';
+  for (const s of cfg.sessions) {
+    const t = s.h*3600 + s.m*60;
+    const diff = t - sec;
+    const isNext = next && diff === next.diff;
+    const card = document.createElement('div');
+    card.className = 'session-card' + (isNext?' next':'');
+
+    let dotCls = 'session-dot';
+    let badge = '<span class="badge badge-done">終了</span>';
+    let rem = '--';
+    if (diff > 0) {
+      dotCls += diff<=900 ? ' soon' : ' open';
+      badge = diff<=900
+        ? '<span class="badge badge-soon">まもなく</span>'
+        : '<span class="badge badge-open">予定</span>';
+      rem = fmt(diff);
+    }
+    if (isNext) dotCls = 'session-dot next';
+
+    const hh = String(s.h).padStart(2,'0');
+    const mm = String(s.m).padStart(2,'0');
+    card.innerHTML = `
+      <div class="${dotCls}"></div>
+      <div class="session-info">
+        <div class="session-name">${s.name}</div>
+        <div class="session-time">${hh}:${mm} ${cfg.label}</div>
+      </div>
+      <div class="session-remain">${rem}</div>
+      ${badge}
+    `;
+    list.appendChild(card);
+  }
+}
+
+update();
+setInterval(update, 1000);
+
+// Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+}
+</script>
+</body>
+</html>
