@@ -93,6 +93,14 @@
 
     .install-btn { display: none; padding: 7px 14px; border: 0.5px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; font-family: inherit; }
     .install-btn.visible { display: block; }
+
+    /* Test mode */
+    .test-bar { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 8px 20px; background: rgba(212,147,10,0.12); border-bottom: 0.5px solid rgba(212,147,10,0.3); }
+    .test-bar.hidden { display: none; }
+    .test-label { font-size: 11px; color: var(--amber); font-weight: 500; letter-spacing: 0.04em; }
+    .test-btn { padding: 5px 14px; border: 0.5px solid var(--amber); border-radius: 6px; background: transparent; color: var(--amber); font-size: 12px; cursor: pointer; font-family: inherit; transition: background 0.15s; }
+    .test-btn:hover { background: rgba(212,147,10,0.15); }
+    .test-btn.active { background: var(--amber); color: #000; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -105,6 +113,12 @@
 <div class="tabs">
   <button class="tab active" id="tab-tse" onclick="setMarket('tse')">東京証券取引所</button>
   <button class="tab" id="tab-us" onclick="setMarket('us')">NYSE / NASDAQ</button>
+</div>
+
+<div class="test-bar hidden" id="test-bar">
+  <div class="test-label">テストモード</div>
+  <button class="test-btn active" id="test-btn" onclick="toggleTest()">秒読みテスト 実行中</button>
+  <div class="test-label" id="test-count"></div>
 </div>
 
 <div class="main">
@@ -128,6 +142,7 @@
     <div class="sound-label">秒読み音声</div>
   </div>
   <button class="install-btn" id="install-btn" onclick="installPWA()">ホーム画面に追加</button>
+  <button class="test-btn" id="footer-test-btn" onclick="startTest()" style="border-color:var(--muted);color:var(--muted);font-size:11px;">秒読みテスト</button>
 </div>
 
 <script>
@@ -158,6 +173,10 @@ let lastSpoken = -1;
 let audioCtx = null;
 let deferredPrompt = null;
 
+let testMode = false;
+let testOffset = 0;
+let testInterval = null;
+
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   deferredPrompt = e;
@@ -166,6 +185,25 @@ window.addEventListener('beforeinstallprompt', e => {
 
 function installPWA() {
   if (deferredPrompt) { deferredPrompt.prompt(); deferredPrompt = null; }
+}
+
+function startTest() {
+  testMode = true;
+  testOffset = 0;
+  lastSpoken = -1;
+  document.getElementById('test-bar').classList.remove('hidden');
+  document.getElementById('footer-test-btn').style.display = 'none';
+  update();
+}
+
+function toggleTest() {
+  testMode = false;
+  testOffset = 0;
+  lastSpoken = -1;
+  document.getElementById('test-bar').classList.add('hidden');
+  document.getElementById('footer-test-btn').style.display = '';
+  document.getElementById('test-count').textContent = '';
+  update();
 }
 
 function getAudioCtx() {
@@ -198,11 +236,6 @@ function nowInTZ(tz) {
   return new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
 }
 
-function nowSec(tz) {
-  const d = nowInTZ(tz);
-  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
-}
-
 function fmt(sec) {
   if (sec < 0) sec = 0;
   const h = Math.floor(sec / 3600);
@@ -229,19 +262,44 @@ function toggleSound() {
 function update() {
   const cfg = MARKETS[market];
   const now = nowInTZ(cfg.tz);
-  const sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
+  let sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
+
+  // テストモード: diff を直接管理する
+  let testDiff = null;
+  let testSession = null;
+  if (testMode) {
+    testOffset++;
+    const cycle = testOffset % 15;
+    // 対象セッションは最初のセッション（前場寄り or Open）
+    testSession = cfg.sessions[0];
+    if (cycle <= 9) {
+      testDiff = 10 - cycle;        // 10,9,8,...,1
+    } else if (cycle <= 11) {
+      testDiff = 0;                  // 0秒（2拍保持）
+    } else {
+      testDiff = 12;                 // リセット準備
+      lastSpoken = -1;
+    }
+    const label = testDiff === 0 ? 'オープン / クローズ！' : testDiff === 12 ? '次サイクルへ…' : `残り ${testDiff} 秒`;
+    document.getElementById('test-count').textContent = label;
+  }
 
   // Clock
   document.getElementById('clock').textContent =
     now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})
-    + ' ' + cfg.label;
+    + ' ' + cfg.label + (testMode ? ' [TEST]' : '');
 
-  // Find next event
-  let next = null, minDiff = Infinity;
-  for (const s of cfg.sessions) {
-    const t = s.h*3600 + s.m*60;
-    const diff = t - sec;
-    if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+  // 次のイベントを決定
+  let next = null;
+  if (testMode) {
+    next = { ...testSession, diff: testDiff };
+  } else {
+    let minDiff = Infinity;
+    for (const s of cfg.sessions) {
+      const t = s.h*3600 + s.m*60;
+      const diff = t - sec;
+      if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+    }
   }
 
   const cd = document.getElementById('countdown');
@@ -255,17 +313,26 @@ function update() {
     cd.textContent = fmt(d);
     cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
 
-    if (d <= 10 && d > 0) {
-      seki.innerHTML = `<div class="sekiyomi-num" key="${d}">${d}</div>`;
+    if (d > 0 && d <= 10) {
+      seki.innerHTML = `<div class="sekiyomi-num">${d}</div>`;
       if (d !== lastSpoken) {
         lastSpoken = d;
-        if (soundOn) { speak(String(d)); beep(d===1?880:660, 0.12); }
+        if (soundOn) {
+          const msg = d === 10
+            ? `10秒前、${next.type==='open'?'寄り':'引け'}まで10秒前`
+            : String(d);
+          speak(msg);
+          beep(d===10 ? 780 : d===1 ? 880 : 660, d===10 ? 0.2 : 0.12);
+        }
       }
     } else if (d === 0) {
-      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'寄り！':'引け！'}</div>`;
+      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
       if (lastSpoken !== 0) {
         lastSpoken = 0;
-        if (soundOn) { speak(next.type==='open'?'寄り！':'引け！'); beep(1100,0.4); }
+        if (soundOn) {
+          speak(next.type==='open'?'マーケットがオープンしました':'マーケットがクローズしました');
+          beep(1100, 0.5);
+        }
       }
     } else {
       seki.innerHTML = '';
@@ -281,40 +348,40 @@ function update() {
     dot.className = 'dot'; stxt.textContent = '終了';
   }
 
-  // Sessions list
-  const list = document.getElementById('sessions');
-  list.innerHTML = '';
-  for (const s of cfg.sessions) {
-    const t = s.h*3600 + s.m*60;
-    const diff = t - sec;
-    const isNext = next && diff === next.diff;
-    const card = document.createElement('div');
-    card.className = 'session-card' + (isNext?' next':'');
-
-    let dotCls = 'session-dot';
-    let badge = '<span class="badge badge-done">終了</span>';
-    let rem = '--';
-    if (diff > 0) {
-      dotCls += diff<=900 ? ' soon' : ' open';
-      badge = diff<=900
-        ? '<span class="badge badge-soon">まもなく</span>'
-        : '<span class="badge badge-open">予定</span>';
-      rem = fmt(diff);
+  // Sessions list（テストモード中はスキップ）
+  if (!testMode) {
+    const list = document.getElementById('sessions');
+    list.innerHTML = '';
+    for (const s of cfg.sessions) {
+      const t = s.h*3600 + s.m*60;
+      const diff = t - sec;
+      const isNext = next && diff === next.diff;
+      const card = document.createElement('div');
+      card.className = 'session-card' + (isNext?' next':'');
+      let dotCls = 'session-dot';
+      let badge = '<span class="badge badge-done">終了</span>';
+      let rem = '--';
+      if (diff > 0) {
+        dotCls += diff<=900 ? ' soon' : ' open';
+        badge = diff<=900
+          ? '<span class="badge badge-soon">まもなく</span>'
+          : '<span class="badge badge-open">予定</span>';
+        rem = fmt(diff);
+      }
+      if (isNext) dotCls = 'session-dot next';
+      const hh = String(s.h).padStart(2,'0');
+      const mm = String(s.m).padStart(2,'0');
+      card.innerHTML = `
+        <div class="${dotCls}"></div>
+        <div class="session-info">
+          <div class="session-name">${s.name}</div>
+          <div class="session-time">${hh}:${mm} ${cfg.label}</div>
+        </div>
+        <div class="session-remain">${rem}</div>
+        ${badge}
+      `;
+      list.appendChild(card);
     }
-    if (isNext) dotCls = 'session-dot next';
-
-    const hh = String(s.h).padStart(2,'0');
-    const mm = String(s.m).padStart(2,'0');
-    card.innerHTML = `
-      <div class="${dotCls}"></div>
-      <div class="session-info">
-        <div class="session-name">${s.name}</div>
-        <div class="session-time">${hh}:${mm} ${cfg.label}</div>
-      </div>
-      <div class="session-remain">${rem}</div>
-      ${badge}
-    `;
-    list.appendChild(card);
   }
 }
 
