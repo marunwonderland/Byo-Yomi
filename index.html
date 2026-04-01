@@ -171,7 +171,6 @@ const MARKETS = {
 let market = 'tse';
 let soundOn = true;
 let lastSpoken = -1;
-let lastNextKey = null;   // 直前tickで「next」だったセッションのkey
 let audioCtx = null;
 let deferredPrompt = null;
 
@@ -195,7 +194,6 @@ function startTest() {
   testOffset = -1;
   testSessionIndex = 0;
   lastSpoken = -1;
-  lastNextKey = null;
   document.getElementById('test-bar').classList.remove('hidden');
   document.getElementById('footer-test-btn').style.display = 'none';
   buildTestButtons();
@@ -223,7 +221,6 @@ function selectTestSession(i) {
   testSessionIndex = i;
   testOffset = -1;
   lastSpoken = -1;
-  lastNextKey = null;
   document.querySelectorAll('#test-session-btns .test-btn').forEach((b, j) => {
     b.classList.toggle('active', j === i);
   });
@@ -332,22 +329,6 @@ function update() {
     if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
   }
 
-  // 本番用：直前tickで秒読み中だったセッションがnextから外れた＝0秒通過 → 発火
-  const currentKey = next ? `${next.h}:${next.m}` : null;
-  if (lastNextKey !== null && currentKey !== lastNextKey) {
-    const cfg2 = MARKETS[market];
-    const fired = cfg2.sessions.find(s => `${s.h}:${s.m}` === lastNextKey);
-    if (fired && lastSpoken === 1) {
-      // 1秒まで読んでいたのに0秒が来なかった → 今発火
-      if (soundOn) { speak(fired.announce0); beep(1100, 0.5); }
-      const seki = document.getElementById('sekiyomi-wrap');
-      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${fired.type==='open'?'オープン！':'クローズ！'}</div>`;
-      setTimeout(() => { seki.innerHTML = ''; }, 3000);
-    }
-    lastSpoken = -1;
-  }
-  lastNextKey = currentKey;
-
   const cd = document.getElementById('countdown');
   const seki = document.getElementById('sekiyomi-wrap');
   const dot = document.getElementById('status-dot');
@@ -359,7 +340,7 @@ function update() {
     cd.textContent = fmt(d);
     cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
 
-    // d===11 のとき announce10 の読み上げだけ先行発火（表示より約1秒早く開始）
+    // d===11: announce10 を先行発火
     if (d === 11 && lastSpoken !== 11) {
       lastSpoken = 11;
       if (soundOn) speak(next.announce10);
@@ -370,20 +351,29 @@ function update() {
       if (d !== lastSpoken) {
         lastSpoken = d;
         if (soundOn) {
-          // d===10 はビープのみ（読み上げはd===11で先行済み）
           if (d === 10) {
             beep(780, 0.2);
           } else {
             speak(String(d));
-            beep(d===1 ? 880 : 660, 0.12);
+            beep(d === 1 ? 880 : 660, 0.12);
           }
+        }
+        // d===1 を読んだ瞬間に1秒後の announce0 を予約
+        if (d === 1) {
+          const snap = { ...next };
+          setTimeout(() => {
+            if (soundOn) { speak(snap.announce0); beep(1100, 0.5); }
+            seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${snap.type==='open'?'オープン！':'クローズ！'}</div>`;
+            setTimeout(() => { seki.innerHTML = ''; }, 3000);
+          }, 1000);
         }
       }
     } else if (d === 0) {
-      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
+      // d===0 にジャストで入った場合もケア（2重発火防止は speak() 内の cancel で対応）
       if (lastSpoken !== 0) {
         lastSpoken = 0;
         if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
+        seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
       }
     } else {
       seki.innerHTML = '';
