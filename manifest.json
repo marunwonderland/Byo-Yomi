@@ -1,6 +1,6 @@
 {
-  "name": "株式秒読みカウントダウン",
-  "short_name": "株式秒読み",
+  "name": "株式市場カウントダウン",
+  "short_name": "市場カウントダウン",
   "description": "東京・NY市場の寄り・引けを将棋の秒読みでカウントダウン",
   "start_url": "./index.html",
   "display": "standalone",

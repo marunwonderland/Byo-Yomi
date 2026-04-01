@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>株式秒読み</title>
+  <title>株式市場カウントダウン</title>
   <meta name="description" content="東京・NY市場の寄り・引けを将棋の秒読みでカウントダウン">
   <meta name="theme-color" content="#0f0f0f">
 
@@ -12,7 +12,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="株式秒読み">
+  <meta name="apple-mobile-web-app-title" content="市場カウントダウン">
 
   <style>
     :root {
@@ -106,7 +106,7 @@
 <body>
 
 <div class="header">
-  <div class="header-title">株式秒読み</div>
+  <div class="header-title">株式市場カウントダウン</div>
   <div class="header-time" id="clock">--:--:--</div>
 </div>
 
@@ -171,6 +171,7 @@ const MARKETS = {
 let market = 'tse';
 let soundOn = true;
 let lastSpoken = -1;
+let lastNextKey = null;   // 直前tickで「next」だったセッションのkey
 let audioCtx = null;
 let deferredPrompt = null;
 
@@ -191,9 +192,10 @@ function installPWA() {
 
 function startTest() {
   testMode = true;
-  testOffset = 0;
+  testOffset = -1;
   testSessionIndex = 0;
   lastSpoken = -1;
+  lastNextKey = null;
   document.getElementById('test-bar').classList.remove('hidden');
   document.getElementById('footer-test-btn').style.display = 'none';
   buildTestButtons();
@@ -219,8 +221,9 @@ function buildTestButtons() {
 function selectTestSession(i) {
   const cfg = MARKETS[market];
   testSessionIndex = i;
-  testOffset = 0;
+  testOffset = -1;
   lastSpoken = -1;
+  lastNextKey = null;
   document.querySelectorAll('#test-session-btns .test-btn').forEach((b, j) => {
     b.classList.toggle('active', j === i);
   });
@@ -295,24 +298,24 @@ function update() {
   const now = nowInTZ(cfg.tz);
   let sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
 
-  // テストモード: diff を直接管理する
-  let testDiff = null;
-  let testSession = null;
+  // テストモード: sec を書き換えて本番と同じコードパスを通す
   if (testMode) {
     testOffset++;
-    const cycle = testOffset % 15;
-    // 対象セッションは選択中のセッション
-    testSession = cfg.sessions[testSessionIndex];
-    if (cycle <= 9) {
-      testDiff = 10 - cycle;        // 10,9,8,...,1
-    } else if (cycle <= 11) {
-      testDiff = 0;                  // 0秒（2拍保持）
+    const cycle = testOffset % 16;
+    const s = cfg.sessions[testSessionIndex];
+    const targetSec = s.h * 3600 + s.m * 60;
+    if (cycle <= 10) {
+      sec = targetSec - (11 - cycle);   // diff = 11,10,9,...,1
+    } else if (cycle <= 12) {
+      sec = targetSec + 1;              // targetSec通過 → nextから外れる
     } else {
-      testDiff = 12;                 // リセット準備
-      lastSpoken = -1;
+      sec = targetSec - 13;            // diff=13、リセット待ち
     }
-    const label = testDiff === 0 ? 'オープン / クローズ！' : testDiff === 12 ? '次サイクルへ…' : `残り ${testDiff} 秒`;
-    document.getElementById('test-count').textContent = label;
+    const remaining = cycle <= 10 ? 11 - cycle : cycle <= 12 ? 0 : '…';
+    document.getElementById('test-count').textContent =
+      remaining === 11 ? '読み上げ先行中' :
+      remaining === 0 ? 'オープン / クローズ！' :
+      remaining === '…' ? '次サイクルへ' : `残り ${remaining} 秒`;
   }
 
   // Clock
@@ -320,18 +323,30 @@ function update() {
     now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})
     + ' ' + cfg.label + (testMode ? ' [TEST]' : '');
 
-  // 次のイベントを決定
+  // 次のイベントを決定（テスト・本番共通）
   let next = null;
-  if (testMode) {
-    next = { ...testSession, diff: testDiff };
-  } else {
-    let minDiff = Infinity;
-    for (const s of cfg.sessions) {
-      const t = s.h*3600 + s.m*60;
-      const diff = t - sec;
-      if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
-    }
+  let minDiff = Infinity;
+  for (const s of cfg.sessions) {
+    const t = s.h*3600 + s.m*60;
+    const diff = t - sec;
+    if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
   }
+
+  // 本番用：直前tickで秒読み中だったセッションがnextから外れた＝0秒通過 → 発火
+  const currentKey = next ? `${next.h}:${next.m}` : null;
+  if (lastNextKey !== null && currentKey !== lastNextKey) {
+    const cfg2 = MARKETS[market];
+    const fired = cfg2.sessions.find(s => `${s.h}:${s.m}` === lastNextKey);
+    if (fired && lastSpoken === 1) {
+      // 1秒まで読んでいたのに0秒が来なかった → 今発火
+      if (soundOn) { speak(fired.announce0); beep(1100, 0.5); }
+      const seki = document.getElementById('sekiyomi-wrap');
+      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${fired.type==='open'?'オープン！':'クローズ！'}</div>`;
+      setTimeout(() => { seki.innerHTML = ''; }, 3000);
+    }
+    lastSpoken = -1;
+  }
+  lastNextKey = currentKey;
 
   const cd = document.getElementById('countdown');
   const seki = document.getElementById('sekiyomi-wrap');
@@ -344,28 +359,35 @@ function update() {
     cd.textContent = fmt(d);
     cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
 
+    // d===11 のとき announce10 の読み上げだけ先行発火（表示より約1秒早く開始）
+    if (d === 11 && lastSpoken !== 11) {
+      lastSpoken = 11;
+      if (soundOn) speak(next.announce10);
+    }
+
     if (d > 0 && d <= 10) {
       seki.innerHTML = `<div class="sekiyomi-num">${d}</div>`;
       if (d !== lastSpoken) {
         lastSpoken = d;
         if (soundOn) {
-          const msg = d === 10 ? next.announce10 : String(d);
-          speak(msg);
-          beep(d===10 ? 780 : d===1 ? 880 : 660, d===10 ? 0.2 : 0.12);
+          // d===10 はビープのみ（読み上げはd===11で先行済み）
+          if (d === 10) {
+            beep(780, 0.2);
+          } else {
+            speak(String(d));
+            beep(d===1 ? 880 : 660, 0.12);
+          }
         }
       }
     } else if (d === 0) {
       seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
       if (lastSpoken !== 0) {
         lastSpoken = 0;
-        if (soundOn) {
-          speak(next.announce0);
-          beep(1100, 0.5);
-        }
+        if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
       }
     } else {
       seki.innerHTML = '';
-      if (d > 10) lastSpoken = -1;
+      if (d > 11) lastSpoken = -1;
     }
 
     dot.className = 'dot' + (d<=10?' urgent-dot':d<=900?' soon':' active');
