@@ -120,7 +120,13 @@
   <div class="test-label">TEST</div>
   <div id="test-session-btns" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;"></div>
   <div class="test-label" id="test-count"></div>
+  <button class="test-btn" onclick="hideTestBar()" style="font-size:11px;padding:3px 10px;">画面隠す</button>
   <button class="test-btn" onclick="toggleTest()" style="font-size:11px;padding:3px 10px;">終了</button>
+</div>
+
+<!-- テストバー非表示中に画面端に出る小さな再表示ボタン -->
+<div id="test-peek" style="display:none;position:fixed;bottom:12px;right:12px;z-index:999;">
+  <button onclick="showTestBar()" style="width:36px;height:36px;border-radius:50%;border:0.5px solid rgba(212,147,10,0.5);background:rgba(212,147,10,0.15);color:#d4930a;font-size:16px;cursor:pointer;font-family:inherit;">T</button>
 </div>
 
 <div class="main">
@@ -174,6 +180,8 @@ let soundOn = true;
 let lastSpoken = -1;
 let audioCtx = null;
 let deferredPrompt = null;
+let announcedSessions = new Set();  // 本日発火済みのセッションキー
+let announcedDate = '';             // 日付が変わったらリセット
 
 let testMode = false;
 let testOffset = 0;
@@ -222,17 +230,30 @@ function selectTestSession(i) {
   testSessionIndex = i;
   testOffset = -1;
   lastSpoken = -1;
+  announcedSessions.clear();
   document.querySelectorAll('#test-session-btns .test-btn').forEach((b, j) => {
     b.classList.toggle('active', j === i);
   });
   document.getElementById('test-count').textContent = cfg.sessions[i].name;
 }
 
+function hideTestBar() {
+  document.getElementById('test-bar').classList.add('hidden');
+  document.getElementById('test-peek').style.display = 'block';
+}
+
+function showTestBar() {
+  document.getElementById('test-bar').classList.remove('hidden');
+  document.getElementById('test-peek').style.display = 'none';
+}
+
 function toggleTest() {
   testMode = false;
   testOffset = 0;
   lastSpoken = -1;
+  announcedSessions.clear();
   document.getElementById('test-bar').classList.add('hidden');
+  document.getElementById('test-peek').style.display = 'none';
   document.getElementById('footer-test-btn').style.display = '';
   document.getElementById('test-count').textContent = '';
   update();
@@ -295,6 +316,10 @@ function update() {
   const cfg = MARKETS[market];
   const now = nowInTZ(cfg.tz);
   let sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
+
+  // 日付が変わったら発火済みセットをリセット
+  const today = now.toLocaleDateString();
+  if (today !== announcedDate) { announcedDate = today; announcedSessions.clear(); }
 
   // テストモード: sec を書き換えて本番と同じコードパスを通す
   if (testMode) {
@@ -359,18 +384,24 @@ function update() {
             beep(d === 1 ? 880 : 660, 0.12);
           }
         }
-        // d===1 を読んだ瞬間に1秒後の announce0 を予約
-        if (d === 1) {
-          const snap = { ...next };
+        // d=3,2,1 それぞれのタイミングで announce0 を予約
+        // announcedSessions で重複発火を防ぐ
+        if (d <= 3) {
+          const snapKey = `${next.h}:${next.m}`;
+          const snapAnnounce0 = next.announce0;
+          const snapType = next.type;
+          const delay = d * 1000;
           setTimeout(() => {
-            if (soundOn) { speak(snap.announce0); beep(1100, 0.5); }
-            seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${snap.type==='open'?'オープン！':'クローズ！'}</div>`;
-            setTimeout(() => { seki.innerHTML = ''; }, 3000);
-          }, 1000);
+            if (announcedSessions.has(snapKey)) return;
+            announcedSessions.add(snapKey);
+            if (soundOn) { speak(snapAnnounce0); beep(1100, 0.5); }
+            const sekiEl = document.getElementById('sekiyomi-wrap');
+            sekiEl.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${snapType==='open'?'オープン！':'クローズ！'}</div>`;
+            setTimeout(() => { sekiEl.innerHTML = ''; }, 3000);
+          }, delay);
         }
       }
     } else if (d === 0) {
-      // d===0 にジャストで入った場合もケア（2重発火防止は speak() 内の cancel で対応）
       if (lastSpoken !== 0) {
         lastSpoken = 0;
         if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
