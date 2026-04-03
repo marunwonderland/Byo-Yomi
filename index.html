@@ -180,13 +180,12 @@ let soundOn = true;
 let lastSpoken = -1;
 let audioCtx = null;
 let deferredPrompt = null;
-let announcedSessions = new Set();  // 本日発火済みのセッションキー
-let announcedDate = '';             // 日付が変わったらリセット
+let lastFiredKey = null;  // 最後に announce0 を発火したセッションキー（h:m）
 
 let testMode = false;
-let testOffset = 0;
-let testInterval = null;
 let testSessionIndex = 0;
+let fakeNowSec = null;
+let testRunId = 0;
 
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
@@ -200,9 +199,9 @@ function installPWA() {
 
 function startTest() {
   testMode = true;
-  testOffset = -1;
   testSessionIndex = 0;
   lastSpoken = -1;
+  lastFiredKey = null;
   document.getElementById('test-bar').classList.remove('hidden');
   document.getElementById('footer-test-btn').style.display = 'none';
   buildTestButtons();
@@ -228,13 +227,15 @@ function buildTestButtons() {
 function selectTestSession(i) {
   const cfg = MARKETS[market];
   testSessionIndex = i;
-  testOffset = -1;
   lastSpoken = -1;
-  announcedSessions.clear();
+  lastFiredKey = null;
+  testRunId++;
   document.querySelectorAll('#test-session-btns .test-btn').forEach((b, j) => {
     b.classList.toggle('active', j === i);
   });
-  document.getElementById('test-count').textContent = cfg.sessions[i].name;
+  const s = cfg.sessions[i];
+  fakeNowSec = s.h * 3600 + s.m * 60 - 12;
+  document.getElementById('test-count').textContent = s.name;
 }
 
 function hideTestBar() {
@@ -249,9 +250,9 @@ function showTestBar() {
 
 function toggleTest() {
   testMode = false;
-  testOffset = 0;
+  fakeNowSec = null;
   lastSpoken = -1;
-  announcedSessions.clear();
+  lastFiredKey = null;
   document.getElementById('test-bar').classList.add('hidden');
   document.getElementById('test-peek').style.display = 'none';
   document.getElementById('footer-test-btn').style.display = '';
@@ -277,15 +278,22 @@ function beep(freq, dur) {
   } catch(e) {}
 }
 
-function speak(text) {
+function speak(text, cancelPrev = true) {
   if (!soundOn || !window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
+  if (cancelPrev) window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'ja-JP'; u.rate = 1.1;
   window.speechSynthesis.speak(u);
 }
 
 function nowInTZ(tz) {
+  if (fakeNowSec !== null) {
+    const real = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+    real.setHours(Math.floor(fakeNowSec / 3600));
+    real.setMinutes(Math.floor((fakeNowSec % 3600) / 60));
+    real.setSeconds(fakeNowSec % 60);
+    return real;
+  }
   return new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
 }
 
@@ -315,31 +323,7 @@ function toggleSound() {
 function update() {
   const cfg = MARKETS[market];
   const now = nowInTZ(cfg.tz);
-  let sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
-
-  // 日付が変わったら発火済みセットをリセット
-  const today = now.toLocaleDateString();
-  if (today !== announcedDate) { announcedDate = today; announcedSessions.clear(); }
-
-  // テストモード: sec を書き換えて本番と同じコードパスを通す
-  if (testMode) {
-    testOffset++;
-    const cycle = testOffset % 16;
-    const s = cfg.sessions[testSessionIndex];
-    const targetSec = s.h * 3600 + s.m * 60;
-    if (cycle <= 10) {
-      sec = targetSec - (11 - cycle);   // diff = 11,10,9,...,1
-    } else if (cycle <= 12) {
-      sec = targetSec + 1;              // targetSec通過 → nextから外れる
-    } else {
-      sec = targetSec - 13;            // diff=13、リセット待ち
-    }
-    const remaining = cycle <= 10 ? 11 - cycle : cycle <= 12 ? 0 : '…';
-    document.getElementById('test-count').textContent =
-      remaining === 11 ? '読み上げ先行中' :
-      remaining === 0 ? 'オープン / クローズ！' :
-      remaining === '…' ? '次サイクルへ' : `残り ${remaining} 秒`;
-  }
+  const sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
 
   // Clock
   document.getElementById('clock').textContent =
@@ -352,7 +336,14 @@ function update() {
   for (const s of cfg.sessions) {
     const t = s.h*3600 + s.m*60;
     const diff = t - sec;
-    if (diff > 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+    if (diff >= 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+  }
+  // 通過直後（-3秒以内）のセッションも拾う
+  if (next === null) {
+    for (const s of cfg.sessions) {
+      const diff = s.h*3600 + s.m*60 - sec;
+      if (diff < 0 && diff > -3) { next = { ...s, diff }; break; }
+    }
   }
 
   const cd = document.getElementById('countdown');
@@ -366,10 +357,10 @@ function update() {
     cd.textContent = fmt(d);
     cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
 
-    // d===11: announce10 を先行発火
+    // d===11: announce10 を先行発火（cancelしない）
     if (d === 11 && lastSpoken !== 11) {
       lastSpoken = 11;
-      if (soundOn) speak(next.announce10);
+      if (soundOn) speak(next.announce10, false);
     }
 
     if (d > 0 && d <= 10) {
@@ -378,38 +369,25 @@ function update() {
         lastSpoken = d;
         if (soundOn) {
           if (d === 10) {
-            beep(780, 0.2);
+            beep(780, 0.2);  // d===10はビープのみ、読み上げは先行済み
           } else {
-            speak(String(d));
+            speak(String(d));  // 9以下は前を止めて読む
             beep(d === 1 ? 880 : 660, 0.12);
           }
         }
-        // d=3,2,1 それぞれのタイミングで announce0 を予約
-        // announcedSessions で重複発火を防ぐ
-        if (d <= 3) {
-          const snapKey = `${next.h}:${next.m}`;
-          const snapAnnounce0 = next.announce0;
-          const snapType = next.type;
-          const delay = d * 1000;
-          setTimeout(() => {
-            if (announcedSessions.has(snapKey)) return;
-            announcedSessions.add(snapKey);
-            if (soundOn) { speak(snapAnnounce0); beep(1100, 0.5); }
-            const sekiEl = document.getElementById('sekiyomi-wrap');
-            sekiEl.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${snapType==='open'?'オープン！':'クローズ！'}</div>`;
-            setTimeout(() => { sekiEl.innerHTML = ''; }, 3000);
-          }, delay);
-        }
       }
-    } else if (d === 0) {
-      if (lastSpoken !== 0) {
-        lastSpoken = 0;
+    } else if (d <= 0) {
+      seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
+      const sessionKey = testMode
+        ? `test-${testRunId}-${next.h}:${next.m}`
+        : `${now.toLocaleDateString()}-${next.h}:${next.m}`;
+      if (lastFiredKey !== sessionKey) {
+        lastFiredKey = sessionKey;
         if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
-        seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
       }
     } else {
       seki.innerHTML = '';
-      if (d > 11) lastSpoken = -1;
+      if (d > 11) { lastSpoken = -1; }
     }
 
     dot.className = 'dot' + (d<=10?' urgent-dot':d<=900?' soon':' active');
@@ -459,7 +437,28 @@ function update() {
 }
 
 update();
-setInterval(update, 1000);
+let tickCount = 0;
+setInterval(() => {
+  tickCount++;
+  if (testMode && fakeNowSec !== null && tickCount % 2 === 0) {
+    fakeNowSec++;
+    const cfg = MARKETS[market];
+    const s = cfg.sessions[testSessionIndex];
+    const targetSec = s.h * 3600 + s.m * 60;
+    const remaining = targetSec - fakeNowSec;
+    document.getElementById('test-count').textContent =
+      remaining > 0 ? `残り ${remaining} 秒` :
+      remaining === 0 ? 'オープン / クローズ！' : '次サイクルへ…';
+    if (fakeNowSec > targetSec + 3) {
+      lastSpoken = -1;
+      lastFiredKey = null;
+      testRunId++;
+      fakeNowSec = targetSec - 12;
+      document.getElementById('test-count').textContent = s.name;
+    }
+  }
+  update();
+}, 500);
 
 if (location.search.includes('test')) {
   document.getElementById('footer-test-btn').style.display = '';
