@@ -118,6 +118,8 @@
 
 <div class="test-bar hidden" id="test-bar">
   <div class="test-label">TEST</div>
+  <input type="date" id="test-date" onchange="onTestDateChange(this.value)"
+    style="background:#2a2000;border:0.5px solid var(--amber);border-radius:6px;color:var(--amber);font-size:12px;padding:4px 8px;font-family:inherit;cursor:pointer;min-width:130px;color-scheme:dark;">
   <div id="test-session-btns" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;"></div>
   <div class="test-label" id="test-count"></div>
   <button class="test-btn" onclick="hideTestBar()" style="font-size:11px;padding:3px 10px;">画面隠す</button>
@@ -190,6 +192,7 @@ let speakLog = [];
 let testMode = false;
 let testSessionIndex = 0;
 let fakeNowSec = null;
+let fakeDateStr = null;  // "YYYY-MM-DD" 形式、null なら本物の日付
 let testRunId = 0;
 
 // --- ユーティリティ ---
@@ -198,14 +201,17 @@ function resetFiredFlags() {
 }
 
 function nowInTZ(tz) {
-  if (fakeNowSec !== null) {
-    const d = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
-    d.setHours(Math.floor(fakeNowSec / 3600));
-    d.setMinutes(Math.floor((fakeNowSec % 3600) / 60));
-    d.setSeconds(fakeNowSec % 60);
-    return d;
+  const base = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+  if (fakeDateStr) {
+    const [y, m, d] = fakeDateStr.split('-').map(Number);
+    base.setFullYear(y); base.setMonth(m - 1); base.setDate(d);
   }
-  return new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+  if (fakeNowSec !== null) {
+    base.setHours(Math.floor(fakeNowSec / 3600));
+    base.setMinutes(Math.floor((fakeNowSec % 3600) / 60));
+    base.setSeconds(fakeNowSec % 60);
+  }
+  return base;
 }
 
 function fmt(sec) {
@@ -295,9 +301,35 @@ function startTest() {
   testMode = true;
   testSessionIndex = 0;
   lastSpoken = -1;
+  fakeDateStr = null;
+  // 日付ピッカーを今日に初期化
+  const cfg = MARKETS[market];
+  const today = nowInTZ(cfg.tz);
+  const y = today.getFullYear();
+  const m = String(today.getMonth()+1).padStart(2,'0');
+  const d = String(today.getDate()).padStart(2,'0');
+  document.getElementById('test-date').value = `${y}-${m}-${d}`;
   document.getElementById('test-bar').classList.remove('hidden');
   buildTestButtons();
   selectTestSession(0);
+}
+
+function toggleDatePicker() {
+  document.getElementById('test-date').showPicker?.();
+}
+
+function onTestDateChange(val) {
+  fakeDateStr = val || null;
+  lastSpoken = -1;
+  resetFiredFlags();
+  if (fakeDateStr) {
+    const cfg = MARKETS[market];
+    const d = new Date(fakeDateStr + 'T12:00:00');
+    const holiday = isHoliday(market, d);
+    document.getElementById('test-session-btns').style.display = holiday ? 'none' : 'flex';
+    document.getElementById('test-count').textContent = holiday ? '🔴 休場日' : cfg.sessions[testSessionIndex].name;
+    if (!holiday) selectTestSession(testSessionIndex);
+  }
 }
 
 function buildTestButtons() {
@@ -332,6 +364,7 @@ function selectTestSession(i) {
 function toggleTest() {
   testMode = false;
   fakeNowSec = null;
+  fakeDateStr = null;
   lastSpoken = -1;
   document.getElementById('test-bar').classList.add('hidden');
   document.getElementById('test-peek').style.display = 'none';
@@ -363,13 +396,58 @@ function toggleSound() {
   document.getElementById('sound-track').className = 'toggle-track' + (soundOn?' on':'');
 }
 
+// --- 休場日データ ---
+// JPX休業日（土日除く祝日・年末年始のみ）
+const JPX_HOLIDAYS = new Set([
+  // 2025
+  '2025-01-01','2025-01-02','2025-01-03',
+  '2025-01-13','2025-02-11','2025-02-23','2025-02-24',
+  '2025-03-20','2025-04-29','2025-05-03','2025-05-04','2025-05-05','2025-05-06',
+  '2025-07-21','2025-08-11','2025-09-15','2025-09-22','2025-09-23',
+  '2025-10-13','2025-11-03','2025-11-23','2025-11-24','2025-12-31',
+  // 2026
+  '2026-01-01','2026-01-02','2026-01-03',
+  '2026-01-12','2026-02-11','2026-02-23',
+  '2026-03-20','2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
+  '2026-07-20','2026-08-11','2026-09-21','2026-09-22','2026-09-23',
+  '2026-10-12','2026-11-03','2026-11-23','2026-12-31',
+  // 2027
+  '2027-01-01','2027-01-02','2027-01-03',
+  '2027-01-11','2027-02-11','2027-02-23',
+  '2027-03-22','2027-04-29','2027-05-03','2027-05-04','2027-05-05',
+  '2027-07-19','2027-08-11','2027-09-20','2027-09-23',
+  '2027-10-11','2027-11-03','2027-11-23','2027-12-31',
+]);
+
+// NYSE休場日（土日除く）
+const NYSE_HOLIDAYS = new Set([
+  // 2025
+  '2025-01-01','2025-01-20','2025-02-17','2025-04-18',
+  '2025-05-26','2025-06-19','2025-07-04','2025-09-01','2025-11-27','2025-12-25',
+  // 2026
+  '2026-01-01','2026-01-19','2026-02-16','2026-04-03',
+  '2026-05-25','2026-06-19','2026-07-03','2026-09-07','2026-11-26','2026-12-25',
+  // 2027
+  '2027-01-01','2027-01-18','2027-02-15','2027-03-26',
+  '2027-05-31','2027-06-18','2027-07-05','2027-09-06','2027-11-25','2027-12-24',
+]);
+
+function isHoliday(marketKey, dateObj) {
+  const dow = dateObj.getDay(); // 0=日, 6=土
+  if (dow === 0 || dow === 6) return true;
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth()+1).padStart(2,'0');
+  const d = String(dateObj.getDate()).padStart(2,'0');
+  const key = `${y}-${m}-${d}`;
+  return marketKey === 'tse' ? JPX_HOLIDAYS.has(key) : NYSE_HOLIDAYS.has(key);
+}
+
+
 // --- メインループ ---
 function update() {
   const cfg = MARKETS[market];
   const now = nowInTZ(cfg.tz);
   const sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
-
-  // 日付が変わったら発火フラグをリセット（本物の時刻で判定）
   const realToday = new Date().toLocaleDateString();
   if (realToday !== firedDate) { firedDate = realToday; resetFiredFlags(); lastSpoken = -1; }
 
@@ -398,13 +476,22 @@ function update() {
   const dot  = document.getElementById('status-dot');
   const stxt = document.getElementById('status-text');
 
-  if (next) {
+  // 休場チェック（now は fakeDateStr で偽装済みなのでテスト・本番同じロジック）
+  if (isHoliday(market, now)) {
+    document.getElementById('event-name').textContent = '本日休場';
+    cd.textContent = '--:--';
+    cd.className = 'countdown';
+    seki.innerHTML = '';
+    dot.className = 'dot';
+    stxt.textContent = market === 'tse' ? '東証休業日' : 'NYSE休場日';
+    document.getElementById('sessions').innerHTML = '';
+  } else if (next) {
     const d = next.diff;
     document.getElementById('event-name').textContent = next.name;
     cd.textContent = fmt(d);
     cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
 
-    // 11秒前：announce10 を先行発火（cancel しない）
+    // 11秒前：announce10 を先行発火（cancelしない）
     if (d === 11 && lastSpoken !== 11) {
       lastSpoken = 11;
       if (soundOn) speak(next.announce10, false);
@@ -415,13 +502,18 @@ function update() {
       if (d !== lastSpoken) {
         lastSpoken = d;
         if (soundOn) {
-          if (d === 10) { beep(780, 0.2); }
-          else { speak(String(d)); beep(d === 1 ? 880 : 660, 0.12); }
+          // d===9のとき announce10 がまだ喋っていればキャンセルしてから読む
+          if (d === 10) {
+            beep(780, 0.2);
+          } else {
+            if (d === 9) window.speechSynthesis.cancel();
+            speak(String(d));
+            beep(d === 1 ? 880 : 660, 0.12);
+          }
         }
       }
     } else if (d <= 0) {
       seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
-      // fired フラグで1回だけ発火（元のセッションオブジェクトに反映）
       const orig = MARKETS[market].sessions.find(s => s.h===next.h && s.m===next.m);
       if (orig && !orig.fired) {
         orig.fired = true;
@@ -434,46 +526,46 @@ function update() {
 
     dot.className = 'dot' + (d<=10?' urgent-dot':d<=900?' soon':' active');
     stxt.textContent = d<=10 ? '秒読み中' : d<=900 ? 'まもなく' : '待機中';
+
+    // セッションリスト（テスト中はスキップ）
+    if (!testMode) {
+      const list = document.getElementById('sessions');
+      list.innerHTML = '';
+      for (const s of cfg.sessions) {
+        const diff = s.h*3600 + s.m*60 - sec;
+        const isNext = s.h===next.h && s.m===next.m;
+        const card = document.createElement('div');
+        card.className = 'session-card' + (isNext?' next':'');
+        let dotCls = 'session-dot';
+        let badge = '<span class="badge badge-done">終了</span>';
+        let rem = '--';
+        if (diff > 0) {
+          dotCls += diff<=900 ? ' soon' : ' open';
+          badge = diff<=900
+            ? '<span class="badge badge-soon">まもなく</span>'
+            : '<span class="badge badge-open">予定</span>';
+          rem = fmt(diff);
+        }
+        if (isNext) dotCls = 'session-dot next';
+        const hh = String(s.h).padStart(2,'0');
+        const mm = String(s.m).padStart(2,'0');
+        card.innerHTML = `
+          <div class="${dotCls}"></div>
+          <div class="session-info">
+            <div class="session-name">${s.name}</div>
+            <div class="session-time">${hh}:${mm} ${cfg.label}</div>
+          </div>
+          <div class="session-remain">${rem}</div>
+          ${badge}
+        `;
+        list.appendChild(card);
+      }
+    }
   } else {
     document.getElementById('event-name').textContent = '本日のセッション終了';
     cd.textContent = '--:--'; cd.className = 'countdown';
     seki.innerHTML = '';
     dot.className = 'dot'; stxt.textContent = '終了';
-  }
-
-  // セッションリスト（テスト中はスキップ）
-  if (!testMode) {
-    const list = document.getElementById('sessions');
-    list.innerHTML = '';
-    for (const s of cfg.sessions) {
-      const diff = s.h*3600 + s.m*60 - sec;
-      const isNext = next && s.h===next.h && s.m===next.m;
-      const card = document.createElement('div');
-      card.className = 'session-card' + (isNext?' next':'');
-      let dotCls = 'session-dot';
-      let badge = '<span class="badge badge-done">終了</span>';
-      let rem = '--';
-      if (diff > 0) {
-        dotCls += diff<=900 ? ' soon' : ' open';
-        badge = diff<=900
-          ? '<span class="badge badge-soon">まもなく</span>'
-          : '<span class="badge badge-open">予定</span>';
-        rem = fmt(diff);
-      }
-      if (isNext) dotCls = 'session-dot next';
-      const hh = String(s.h).padStart(2,'0');
-      const mm = String(s.m).padStart(2,'0');
-      card.innerHTML = `
-        <div class="${dotCls}"></div>
-        <div class="session-info">
-          <div class="session-name">${s.name}</div>
-          <div class="session-time">${hh}:${mm} ${cfg.label}</div>
-        </div>
-        <div class="session-remain">${rem}</div>
-        ${badge}
-      `;
-      list.appendChild(card);
-    }
   }
 }
 
