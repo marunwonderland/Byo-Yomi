@@ -467,16 +467,19 @@ function update() {
 
   // 次のイベントを決定
   let next = null;
+  let nextIdx = -1;
   let minDiff = Infinity;
-  for (const s of cfg.sessions) {
+  for (let i = 0; i < cfg.sessions.length; i++) {
+    const s = cfg.sessions[i];
     const diff = s.h*3600 + s.m*60 - sec;
-    if (diff >= 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; }
+    if (diff >= 0 && diff < minDiff) { minDiff = diff; next = { ...s, diff }; nextIdx = i; }
   }
   // 通過直後（3秒以内）も拾う
   if (next === null) {
-    for (const s of cfg.sessions) {
+    for (let i = 0; i < cfg.sessions.length; i++) {
+      const s = cfg.sessions[i];
       const diff = s.h*3600 + s.m*60 - sec;
-      if (diff < 0 && diff > -3) { next = { ...s, diff }; break; }
+      if (diff < 0 && diff > -3) { next = { ...s, diff }; nextIdx = i; break; }
     }
   }
 
@@ -523,9 +526,8 @@ function update() {
       }
     } else if (d <= 0) {
       seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
-      const orig = MARKETS[market].sessions.find(s => s.h===next.h && s.m===next.m);
-      if (orig && !orig.fired) {
-        orig.fired = true;
+      if (nextIdx >= 0 && !cfg.sessions[nextIdx].fired) {
+        cfg.sessions[nextIdx].fired = true;
         if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
       }
     } else {
@@ -580,10 +582,8 @@ function update() {
 
 // --- 起動 ---
 update();
-let tickCount = 0;
 setInterval(() => {
-  tickCount++;
-  if (testMode && fakeNowSec !== null && tickCount % 2 === 0) {
+  if (testMode && fakeNowSec !== null) {
     fakeNowSec++;
     const s = MARKETS[market].sessions[testSessionIndex];
     const targetSec = s.h * 3600 + s.m * 60;
@@ -600,12 +600,10 @@ setInterval(() => {
     }
   }
   update();
-}, 500);
+}, 1000);
 
-// キーボードショートカット
-// Shift+T: テストモード起動/終了
-// Shift+L: 履歴表示トグル / ダウンロード（履歴表示中）
-document.addEventListener('keydown', e => {
+// キーボードショートカット（window に登録、PWAでも動作）
+window.addEventListener('keydown', e => {
   if (!e.shiftKey) return;
   if (e.key === 'T') {
     testMode ? toggleTest() : startTest();
