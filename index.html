@@ -135,9 +135,13 @@
   <button class="test-btn" onclick="toggleTest()" style="font-size:11px;padding:3px 10px;">終了</button>
 </div>
 
-<!-- 隠しトリガー：右下隅=テスト、左下隅=ログ -->
-<div id="trigger-test" style="position:fixed;bottom:0;right:0;width:48px;height:48px;z-index:9999;"></div>
-<div id="trigger-log"  style="position:fixed;bottom:0;left:0; width:48px;height:48px;z-index:9999;"></div>
+<!-- 隠しトリガー：右上隅=テスト、左上隅=ログ -->
+<div id="trigger-test" style="position:fixed;top:0;right:0;width:48px;height:48px;z-index:9999;display:flex;align-items:flex-start;justify-content:flex-end;padding:6px;">
+  <div style="width:6px;height:6px;border-radius:50%;background:var(--amber);opacity:0.45;"></div>
+</div>
+<div id="trigger-log" style="position:fixed;top:0;left:0;width:48px;height:48px;z-index:9999;display:flex;align-items:flex-start;justify-content:flex-start;padding:6px;">
+  <div style="width:6px;height:6px;border-radius:50%;background:var(--muted);opacity:0.45;"></div>
+</div>
 <div id="test-peek" style="display:none;position:fixed;bottom:12px;right:12px;z-index:999;">
   <button onclick="showTestBar()" style="width:36px;height:36px;border-radius:50%;border:0.5px solid rgba(212,147,10,0.5);background:rgba(212,147,10,0.15);color:#d4930a;font-size:16px;cursor:pointer;font-family:inherit;">T</button>
 </div>
@@ -610,14 +614,28 @@ setInterval(() => {
 // 隠しトリガー（右下隅=テスト、左下隅=ログ）
 function addLongPress(el, ms, fn) {
   let timer = null;
-  const start = () => { timer = setTimeout(() => { timer = null; fn(); }, ms); };
+  let startX, startY;
+  const start = (x, y) => {
+    startX = x; startY = y;
+    timer = setTimeout(() => { timer = null; fn(); }, ms);
+  };
   const cancel = () => { clearTimeout(timer); timer = null; };
-  el.addEventListener('mousedown', start);
-  el.addEventListener('touchstart', e => { e.preventDefault(); start(); }, { passive: false });
+  el.addEventListener('mousedown', e => start(e.clientX, e.clientY));
+  el.addEventListener('touchstart', e => {
+    e.preventDefault();
+    start(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
+  el.addEventListener('mousemove', e => {
+    if (timer && (Math.abs(e.clientX-startX) > 10 || Math.abs(e.clientY-startY) > 10)) cancel();
+  });
+  el.addEventListener('touchmove', e => {
+    if (timer && (Math.abs(e.touches[0].clientX-startX) > 10 || Math.abs(e.touches[0].clientY-startY) > 10)) cancel();
+  });
   el.addEventListener('mouseup', cancel);
   el.addEventListener('mouseleave', cancel);
   el.addEventListener('touchend', cancel);
   el.addEventListener('touchcancel', cancel);
+  el.addEventListener('contextmenu', e => e.preventDefault());
 }
 
 addLongPress(document.getElementById('trigger-test'), 800, () => {
