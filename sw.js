@@ -1,8 +1,9 @@
-const CACHE = 'stock-countdown-v1';
+const CACHE = 'stock-countdown-v5';  // バージョンを上げると古いキャッシュが自動削除される
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
+  './favicon.ico',
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
@@ -15,8 +16,12 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(
+    // 古いバージョンのキャッシュを全て削除
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => k !== CACHE).map(k => {
+        console.log('[SW] Deleting old cache:', k);
+        return caches.delete(k);
+      }))
     ).then(() => self.clients.claim())
   );
 });
