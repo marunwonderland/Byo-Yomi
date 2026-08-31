@@ -104,6 +104,14 @@
   <input type="date" id="test-date" onchange="onTestDateChange(this.value)"
     style="background:#2a2000;border:0.5px solid var(--amber);border-radius:6px;color:var(--amber);font-size:12px;padding:4px 8px;font-family:inherit;cursor:pointer;min-width:130px;color-scheme:dark;">
   <div id="test-session-btns" style="display:flex;gap:6px;flex-wrap:wrap;justify-content:center;"></div>
+  <div id="test-lead-btns" style="display:flex;gap:4px;align-items:center;">
+    <span class="test-label" style="font-size:10px;">開始:</span>
+    <button class="test-btn active" id="lead-12" onclick="setTestLeadSec(12)" style="font-size:10px;padding:2px 6px;">12秒前</button>
+    <button class="test-btn" id="lead-30" onclick="setTestLeadSec(30)" style="font-size:10px;padding:2px 6px;">30秒前</button>
+    <button class="test-btn" id="lead-60" onclick="setTestLeadSec(60)" style="font-size:10px;padding:2px 6px;">1分前</button>
+    <button class="test-btn" id="lead-180" onclick="setTestLeadSec(180)" style="font-size:10px;padding:2px 6px;">3分前</button>
+    <button class="test-btn" id="lead-315" onclick="setTestLeadSec(315)" style="font-size:10px;padding:2px 6px;">5分15秒前</button>
+  </div>
   <div class="test-label" id="test-count"></div>
   <button class="test-btn" onclick="hideTestBar()" style="font-size:11px;padding:3px 10px;">画面隠す</button>
   <button class="test-btn" onclick="toggleTest()" style="font-size:11px;padding:3px 10px;">終了</button>
@@ -151,7 +159,7 @@
 </div>
 
 <script>
-const APP_VERSION = '2026-05-10-v6';
+const APP_VERSION = '2026-08-31-v7';
 console.log('[VERSION] ' + APP_VERSION);
 
 function updateDisplayVersion() {
@@ -222,6 +230,7 @@ const MARKETS = {
 let market = 'tse', soundOn = true, lastSpoken = -1;
 let audioCtx = null, deferredPrompt = null, firedDate = '', speakLog = [];
 let testMode = false, testSessionIndex = 0, fakeNowSec = null, fakeDateStr = null, testRunId = 0;
+let scheduledOscillators = [], scheduledSpeechTimers = [], scheduledEventKey = null;
 
 // --- バージョンチェック（キャッシュクリア）---
 const storedVersion = localStorage.getItem('appVersion');
@@ -269,22 +278,48 @@ function nextOpenDay(marketKey) {
   return base;
 }
 
-// --- 音声 ---
-function beep(freq, dur) {
+// --- 音声 & スケジューラ ---
+function getAudioContext() {
   try {
     if (!audioCtx) {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
+      if (!AC) return null;
       audioCtx = new AC();
     }
-    const osc = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    osc.connect(g); g.connect(audioCtx.destination);
-    osc.type = 'sine'; osc.frequency.value = freq;
-    g.gain.setValueAtTime(0.18, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-    osc.start(); osc.stop(audioCtx.currentTime + dur);
-  } catch(e) {}
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
+  } catch(e) {
+    return null;
+  }
+}
+
+function scheduleBeep(when, freq, dur) {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return null;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, when);
+    g.gain.setValueAtTime(0.18, when);
+    g.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    osc.start(when);
+    osc.stop(when + dur);
+    return osc;
+  } catch(e) {
+    return null;
+  }
+}
+
+function beep(freq, dur, when) {
+  const ctx = getAudioContext();
+  if (!ctx) return null;
+  const t = (when !== undefined && when !== null) ? when : ctx.currentTime;
+  return scheduleBeep(t, freq, dur);
 }
 
 function speak(text) {
@@ -302,6 +337,141 @@ function speak(text) {
     window.speechSynthesis.speak(u);
   } catch(e) {}
 }
+
+function cancelScheduledAudio() {
+  for (const osc of scheduledOscillators) {
+    try { osc.stop(); osc.disconnect(); } catch(e) {}
+  }
+  scheduledOscillators = [];
+
+  for (const tid of scheduledSpeechTimers) {
+    clearTimeout(tid);
+  }
+  scheduledSpeechTimers = [];
+  scheduledEventKey = null;
+}
+
+function getNextSessionInfo(mk) {
+  const cfg = MARKETS[mk];
+  const now = nowInTZ(cfg.tz);
+  if (isHoliday(mk, now)) return null;
+
+  if (testMode && fakeNowSec !== null) {
+    const s = cfg.sessions[testSessionIndex];
+    const targetSec = s.h * 3600 + s.m * 60;
+    const diff = targetSec - fakeNowSec;
+    return { session: s, index: testSessionIndex, diff, targetSec, nowSec: fakeNowSec };
+  }
+
+  const sec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+  let next = null, minDiff = Infinity, nextIdx = -1;
+  for (let i = 0; i < cfg.sessions.length; i++) {
+    const diff = cfg.sessions[i].h * 3600 + cfg.sessions[i].m * 60 - sec;
+    if (diff >= 0 && diff < minDiff) {
+      minDiff = diff;
+      next = cfg.sessions[i];
+      nextIdx = i;
+    }
+  }
+  if (!next) {
+    for (let i = 0; i < cfg.sessions.length; i++) {
+      const diff = cfg.sessions[i].h * 3600 + cfg.sessions[i].m * 60 - sec;
+      if (diff < 0 && diff > -3) {
+        return { session: cfg.sessions[i], index: i, diff, targetSec: cfg.sessions[i].h * 3600 + cfg.sessions[i].m * 60, nowSec: sec };
+      }
+    }
+    return null;
+  }
+  return { session: next, index: nextIdx, diff: minDiff, targetSec: next.h * 3600 + next.m * 60, nowSec: sec };
+}
+
+function scheduleAudioForNextEvent() {
+  if (!soundOn) return;
+  const cfg = MARKETS[market];
+  const now = nowInTZ(cfg.tz);
+  if (isHoliday(market, now)) {
+    cancelScheduledAudio();
+    return;
+  }
+
+  const info = getNextSessionInfo(market);
+  if (!info || info.diff < 0) {
+    cancelScheduledAudio();
+    return;
+  }
+
+  const session = info.session;
+  const todayStr = fakeDateStr || `${now.getFullYear()}-${now.getMonth()+1}-${now.getDate()}`;
+  const eventKey = `${market}_${todayStr}_${session.name}_${session.h}:${session.m}_test${testMode ? testRunId : '0'}`;
+
+  if (scheduledEventKey === eventKey) {
+    return;
+  }
+
+  cancelScheduledAudio();
+  scheduledEventKey = eventKey;
+
+  const diff = info.diff;
+  const ctx = getAudioContext();
+  const baseAudioTime = ctx ? ctx.currentTime : null;
+
+  const sequence = [
+    { offset: 11, text: session.announce10, freq: null, dur: null },
+    { offset: 10, text: null, freq: 780, dur: 0.2 },
+    { offset: 9,  text: '9', freq: 660, dur: 0.12 },
+    { offset: 8,  text: '8', freq: 660, dur: 0.12 },
+    { offset: 7,  text: '7', freq: 660, dur: 0.12 },
+    { offset: 6,  text: '6', freq: 660, dur: 0.12 },
+    { offset: 5,  text: '5', freq: 660, dur: 0.12 },
+    { offset: 4,  text: '4', freq: 660, dur: 0.12 },
+    { offset: 3,  text: '3', freq: 660, dur: 0.12 },
+    { offset: 2,  text: '2', freq: 660, dur: 0.12 },
+    { offset: 1,  text: '1', freq: 880, dur: 0.12 },
+    { offset: 0,  text: session.announce0, freq: 1100, dur: 0.5 }
+  ];
+
+  for (const item of sequence) {
+    const delaySec = diff - item.offset;
+    if (delaySec < -0.3) continue;
+
+    const effectiveDelaySec = Math.max(0, delaySec);
+
+    // Web Audio ビープ音の先行予約
+    if (item.freq && ctx && baseAudioTime !== null) {
+      const osc = scheduleBeep(baseAudioTime + effectiveDelaySec, item.freq, item.dur);
+      if (osc) scheduledOscillators.push(osc);
+    }
+
+    // 音声アナウンス / TTSの予約
+    if (item.text) {
+      const tid = setTimeout(() => {
+        if (soundOn && scheduledEventKey === eventKey) {
+          speak(item.text);
+        }
+      }, effectiveDelaySec * 1000);
+      scheduledSpeechTimers.push(tid);
+    }
+  }
+}
+
+// タブ復帰（バックグラウンドからの復帰）時の再同期
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    getAudioContext();
+    cancelScheduledAudio();
+    scheduleAudioForNextEvent();
+    update();
+  }
+});
+
+// ユーザージェスチャーで AudioContext をアンロック
+function unlockAudio() {
+  getAudioContext();
+  scheduleAudioForNextEvent();
+}
+['click', 'touchstart', 'keydown'].forEach(evt => {
+  window.addEventListener(evt, unlockAudio, { passive: true });
+});
 
 function addLog(text) {
   const now = new Date();
@@ -334,36 +504,51 @@ function installPWA() { if (deferredPrompt) { deferredPrompt.prompt(); deferredP
 
 // --- マーケット切り替え ---
 function setMarket(m) {
-  market = m; lastSpoken = -1;
-  document.getElementById('tab-tse').className = 'tab' + (m==='tse'?' active':'');
-  document.getElementById('tab-us').className = 'tab' + (m==='us'?' active':'');
-  update();
+  if (market !== m) {
+    market = m; lastSpoken = -1;
+    cancelScheduledAudio();
+    document.getElementById('tab-tse').className = 'tab' + (m==='tse'?' active':'');
+    document.getElementById('tab-us').className = 'tab' + (m==='us'?' active':'');
+    scheduleAudioForNextEvent();
+    update();
+  }
 }
+
 function toggleSound() {
   soundOn = !soundOn;
   document.getElementById('sound-track').className = 'toggle-track' + (soundOn?' on':'');
+  if (soundOn) {
+    getAudioContext();
+    scheduleAudioForNextEvent();
+  } else {
+    cancelScheduledAudio();
+    if (window.speechSynthesis) {
+      try { window.speechSynthesis.cancel(); } catch(e) {}
+    }
+  }
 }
 
 // --- テストモード ---
 function startTest() {
   testMode = true; testSessionIndex = 0; lastSpoken = -1;
-  // 初期日付：次の開場日
   const next = nextOpenDay(market);
   const y = next.getFullYear(), m = String(next.getMonth()+1).padStart(2,'0'), d = String(next.getDate()).padStart(2,'0');
   fakeDateStr = `${y}-${m}-${d}`;
   document.getElementById('test-date').value = fakeDateStr;
   document.getElementById('test-bar').classList.remove('hidden');
-  buildTestButtons(); selectTestSession(0);
+  buildTestButtons();
+  selectTestSession(0);
 }
 
 function onTestDateChange(val) {
   fakeDateStr = val || null; lastSpoken = -1; resetFiredFlags();
+  cancelScheduledAudio();
   const d = fakeDateStr ? new Date(fakeDateStr + 'T12:00:00') : new Date();
   const holiday = isHoliday(market, d);
   document.getElementById('test-session-btns').style.display = 'flex';
   if (holiday) {
     document.getElementById('test-count').textContent = '🔴 休場日';
-    // 休場日でもボタンは押せるが、update()内で休場表示になる
+    update();
   } else {
     selectTestSession(testSessionIndex);
   }
@@ -380,101 +565,94 @@ function buildTestButtons() {
   });
 }
 
+let testLeadSec = 12;
+function setTestLeadSec(sec) {
+  testLeadSec = sec;
+  document.querySelectorAll('#test-lead-btns .test-btn').forEach(b => {
+    b.classList.toggle('active', b.id === `lead-${sec}`);
+  });
+  selectTestSession(testSessionIndex);
+}
+
 function selectTestSession(i) {
   const cfg = MARKETS[market]; testSessionIndex = i; lastSpoken = -1; testRunId++;
   cfg.sessions[i].fired = false;
   document.querySelectorAll('#test-session-btns .test-btn').forEach((b, j) => b.classList.toggle('active', j === i));
   const s = cfg.sessions[i];
-  fakeNowSec = s.h * 3600 + s.m * 60 - 12;
+  fakeNowSec = s.h * 3600 + s.m * 60 - testLeadSec;
   document.getElementById('test-count').textContent = s.name;
+  cancelScheduledAudio();
+  scheduleAudioForNextEvent();
+  update();
 }
 
 function toggleTest() {
-  testMode = false; fakeNowSec = null; fakeDateStr = null; lastSpoken = -1;
+  testMode = false; fakeNowSec = null; fakeDateStr = null; lastSpoken = -1; testLeadSec = 12;
+  cancelScheduledAudio();
   document.getElementById('test-bar').classList.add('hidden');
   document.getElementById('test-peek').style.display = 'none';
   document.getElementById('test-count').textContent = '';
+  scheduleAudioForNextEvent();
   update();
 }
 function hideTestBar() { document.getElementById('test-bar').classList.add('hidden'); document.getElementById('test-peek').style.display = 'block'; }
 function showTestBar() { document.getElementById('test-bar').classList.remove('hidden'); document.getElementById('test-peek').style.display = 'none'; }
 
-// --- メインループ ---
+// --- メインループ（UI描画） ---
 function update() {
   const cfg = MARKETS[market];
   const now = nowInTZ(cfg.tz);
-  const sec = now.getHours()*3600 + now.getMinutes()*60 + now.getSeconds();
   const realToday = new Date().toLocaleDateString();
-  if (realToday !== firedDate) { firedDate = realToday; resetFiredFlags(); lastSpoken = -1; }
+  if (realToday !== firedDate) {
+    firedDate = realToday;
+    resetFiredFlags();
+    lastSpoken = -1;
+    cancelScheduledAudio();
+  }
 
   document.getElementById('clock').textContent =
     now.toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false})
     + ' ' + cfg.label + (testMode ? ' [TEST]' : '');
-
-  let next = null, nextIdx = -1, minDiff = Infinity;
-  for (let i = 0; i < cfg.sessions.length; i++) {
-    const diff = cfg.sessions[i].h*3600 + cfg.sessions[i].m*60 - sec;
-    if (diff >= 0 && diff < minDiff) { minDiff = diff; next = { ...cfg.sessions[i], diff }; nextIdx = i; }
-  }
-  if (!next) {
-    for (let i = 0; i < cfg.sessions.length; i++) {
-      const diff = cfg.sessions[i].h*3600 + cfg.sessions[i].m*60 - sec;
-      if (diff < 0 && diff > -3) { next = { ...cfg.sessions[i], diff }; nextIdx = i; break; }
-    }
-  }
 
   const cd = document.getElementById('countdown');
   const seki = document.getElementById('sekiyomi-wrap');
   const dot = document.getElementById('status-dot');
   const stxt = document.getElementById('status-text');
 
-  // 休場チェック：テストモード中も fakeDateStr の日付で判定する
+  // 休場チェック
   if (isHoliday(market, now)) {
     document.getElementById('event-name').textContent = testMode ? '休場日（テスト中）' : '本日休場';
     cd.textContent = '--:--'; cd.className = 'countdown'; seki.innerHTML = '';
     dot.className = 'dot'; stxt.textContent = market === 'tse' ? '東証休業日' : 'NYSE休場日';
     if (!testMode) document.getElementById('sessions').innerHTML = '';
+    cancelScheduledAudio();
     return;
   }
 
-  if (next) {
-    const d = next.diff;
+  const info = getNextSessionInfo(market);
+  if (info) {
+    const next = info.session;
+    const d = info.diff;
     document.getElementById('event-name').textContent = next.name;
     cd.textContent = fmt(d);
-    cd.className = 'countdown' + (d <= 10 ? ' urgent' : d <= 60 ? ' warning' : '');
+    cd.className = 'countdown' + (d <= 10 && d > 0 ? ' urgent' : d <= 60 ? ' warning' : '');
 
-    // 11秒前に announce10 を先行発火
-    if (d === 11 && lastSpoken !== 11) {
-      lastSpoken = 11;
-      if (soundOn) speak(next.announce10);
-    }
-
+    // UI上の秒読み・完了表示
     if (d > 0 && d <= 10) {
       seki.innerHTML = `<div class="sekiyomi-num">${d}</div>`;
-      if (d !== lastSpoken) {
-        lastSpoken = d;
-        if (soundOn) {
-          if (d === 10) { beep(780, 0.2); }
-          else { speak(String(d)); beep(d === 1 ? 880 : 660, 0.12); }
-        }
-      }
-    } else if (d <= 0) {
+    } else if (d <= 0 && d >= -3) {
       seki.innerHTML = `<div class="sekiyomi-num" style="color:#f0f0f0">${next.type==='open'?'オープン！':'クローズ！'}</div>`;
-      if (nextIdx >= 0 && !cfg.sessions[nextIdx].fired) {
-        cfg.sessions[nextIdx].fired = true;
-        if (soundOn) { speak(next.announce0); beep(1100, 0.5); }
-      }
     } else {
       seki.innerHTML = '';
-      if (d > 11) lastSpoken = -1;
     }
 
-    dot.className = 'dot' + (d<=10?' urgent-dot':d<=900?' soon':' active');
-    stxt.textContent = d<=10 ? '秒読み中' : d<=900 ? 'まもなく' : '待機中';
+    dot.className = 'dot' + (d<=10 && d>0 ? ' urgent-dot' : d<=900 ? ' soon' : ' active');
+    stxt.textContent = (d<=10 && d>0) ? '秒読み中' : (d<=0 && d>=-3) ? 'オープン / クローズ' : (d<=900) ? 'まもなく' : '待機中';
 
     if (!testMode) {
       const list = document.getElementById('sessions');
       list.innerHTML = '';
+      const sec = info.nowSec;
       for (const s of cfg.sessions) {
         const diff = s.h*3600 + s.m*60 - sec;
         const isNext = s.h===next.h && s.m===next.m;
@@ -491,10 +669,14 @@ function update() {
         list.appendChild(card);
       }
     }
+
+    // 次回セッションの音声を確実にスケジュール
+    scheduleAudioForNextEvent();
   } else {
     document.getElementById('event-name').textContent = '本日のセッション終了';
     cd.textContent = '--:--'; cd.className = 'countdown'; seki.innerHTML = '';
     dot.className = 'dot'; stxt.textContent = '終了';
+    cancelScheduledAudio();
   }
 }
 
@@ -508,9 +690,13 @@ setInterval(() => {
     document.getElementById('test-count').textContent =
       remaining > 0 ? `残り ${remaining} 秒` : remaining === 0 ? 'オープン / クローズ！' : '次サイクルへ…';
     if (fakeNowSec > targetSec + 3) {
-      lastSpoken = -1; testRunId++; s.fired = false;
-      fakeNowSec = targetSec - 12;
+      lastSpoken = -1;
+      testRunId++;
+      s.fired = false;
+      fakeNowSec = targetSec - testLeadSec;
       document.getElementById('test-count').textContent = s.name;
+      cancelScheduledAudio();
+      scheduleAudioForNextEvent();
     }
   }
   update();

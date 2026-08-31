@@ -1,4 +1,4 @@
-const CACHE = 'stock-countdown-v5';  // バージョンを上げると古いキャッシュが自動削除される
+const CACHE = 'stock-countdown-v6';  // バージョンを上げると古いキャッシュが自動削除される
 const ASSETS = [
   './',
   './index.html',
