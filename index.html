@@ -88,6 +88,27 @@
     .test-label { font-size: 11px; color: var(--amber); font-weight: 500; }
     .test-btn { padding: 5px 14px; border: 0.5px solid var(--amber); border-radius: 6px; background: transparent; color: var(--amber); font-size: 12px; cursor: pointer; font-family: inherit; }
     .test-btn.active { background: var(--amber); color: #000; font-weight: 600; }
+
+    /* ==== フィードバック (Issue #3 PoC) ==== */
+    .feedback-btn { padding: 7px 14px; border: 0.5px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; font-family: inherit; }
+    .feedback-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+    .feedback-overlay.hidden { display: none; }
+    .feedback-modal { width: 100%; max-width: 360px; max-height: 90vh; overflow-y: auto; background: var(--bg2); border: 0.5px solid var(--border); border-radius: 14px; padding: 18px; }
+    .feedback-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .feedback-title { font-size: 15px; font-weight: 600; }
+    .feedback-close { background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 4px; }
+    .feedback-type-row { display: flex; gap: 6px; margin-bottom: 12px; }
+    .feedback-type-btn { flex: 1; padding: 9px 0; border: 0.5px solid var(--border); border-radius: 8px; background: transparent; cursor: pointer; font-size: 12px; color: var(--muted); font-family: inherit; }
+    .feedback-type-btn.active { background: var(--bg3); color: var(--text); border-color: rgba(255,255,255,0.2); }
+    .feedback-textarea { width: 100%; min-height: 96px; background: var(--bg3); border: 0.5px solid var(--border); border-radius: 8px; color: var(--text); padding: 10px; font-family: inherit; font-size: 13px; resize: vertical; margin-bottom: 10px; }
+    .feedback-env { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+    .feedback-env summary { cursor: pointer; }
+    .feedback-env-preview { font-family: var(--font-mono); font-size: 10px; white-space: pre-wrap; word-break: break-all; background: var(--bg3); padding: 8px; border-radius: 6px; max-height: 140px; overflow-y: auto; margin-top: 6px; }
+    .feedback-submit { width: 100%; padding: 10px 0; border: 0.5px solid var(--amber); border-radius: 8px; background: transparent; color: var(--amber); font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .feedback-submit:disabled { opacity: 0.5; cursor: default; }
+    .feedback-status { font-size: 12px; margin-top: 10px; min-height: 16px; }
+    .feedback-status.success { color: var(--green); }
+    .feedback-status.error { color: var(--red); }
   </style>
 </head>
 <body>
@@ -148,6 +169,7 @@
     <div class="toggle-track on" id="sound-track"><div class="toggle-knob"></div></div>
     <div class="sound-label">秒読み音声</div>
   </div>
+  <button class="feedback-btn" id="feedback-btn" onclick="openFeedbackModal()">フィードバック</button>
   <button class="install-btn" id="install-btn" onclick="installPWA()">ホーム画面に追加</button>
   <a href="https://www.marunwonderland.com/" class="footer-credit" target="_blank" rel="noopener noreferrer">
     <div class="footer-credit-top">
@@ -156,6 +178,26 @@
     </div>
     <div class="footer-version" id="footer-version"></div>
   </a>
+</div>
+
+<div class="feedback-overlay hidden" id="feedback-overlay">
+  <div class="feedback-modal">
+    <div class="feedback-header">
+      <div class="feedback-title">フィードバック</div>
+      <button class="feedback-close" onclick="closeFeedbackModal()" aria-label="閉じる">✕</button>
+    </div>
+    <div class="feedback-type-row">
+      <button class="feedback-type-btn active" id="feedback-type-problem" onclick="selectFeedbackType('problem')">問題を報告</button>
+      <button class="feedback-type-btn" id="feedback-type-suggestion" onclick="selectFeedbackType('suggestion')">機能を提案</button>
+    </div>
+    <textarea id="feedback-message" class="feedback-textarea" placeholder="内容を入力してください" maxlength="5000"></textarea>
+    <details class="feedback-env">
+      <summary>送信される情報を確認</summary>
+      <pre class="feedback-env-preview" id="feedback-env-preview"></pre>
+    </details>
+    <button class="feedback-submit" id="feedback-submit" onclick="submitFeedback()">送信</button>
+    <div class="feedback-status" id="feedback-status"></div>
+  </div>
 </div>
 
 <script>
@@ -731,6 +773,131 @@ window.addEventListener('keydown', e => {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(()=>{}); });
 }
+
+// ==== フィードバック送信 (Issue #3 PoC) ====
+// 本番Cloudflare Account作成後、ここを本番Worker URLに差し替える。
+// (window.MARUN_FEEDBACK_API_BASE_URL をページ側で先に設定しておけば、
+//  このファイルを直接書き換えずに向き先を切り替えられる)
+const FEEDBACK_API_BASE_URL = window.MARUN_FEEDBACK_API_BASE_URL || 'http://localhost:8787';
+const FEEDBACK_PRODUCT_ID = 'byo-yomi-stock-countdown';
+const FEEDBACK_PRODUCT_NAME = '株式秒読みカウントダウン';
+const FEEDBACK_SCHEMA_VERSION = 1;
+
+let feedbackType = 'problem';
+
+function detectOsName() {
+  const ua = navigator.userAgent || '';
+  if (/Android/i.test(ua)) return 'Android';
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
+  if (/Windows/i.test(ua)) return 'Windows';
+  if (/Mac OS X/i.test(ua)) return 'macOS';
+  if (/Linux/i.test(ua)) return 'Linux';
+  return 'Unknown';
+}
+
+function detectOsVersion() {
+  // ブラウザからは正確なOSバージョンを常に取得できるとは限らないため、
+  // 取得できない場合は 'unknown' とする(ファイルパス等の詮索は行わない)。
+  const ua = navigator.userAgent || '';
+  const m = ua.match(/(?:Android|Windows NT|Mac OS X|CPU OS|CPU iPhone OS) ([\d._]+)/i);
+  return m ? m[1].replace(/_/g, '.') : 'unknown';
+}
+
+function detectArchitecture() {
+  // ブラウザから正確なCPUアーキテクチャは取得できないため簡易判定に留める。
+  return (navigator.userAgentData && navigator.userAgentData.mobile) ? 'web-mobile' : 'web';
+}
+
+function buildFeedbackPayload(message) {
+  return {
+    reportType: feedbackType,
+    productId: FEEDBACK_PRODUCT_ID,
+    productName: FEEDBACK_PRODUCT_NAME,
+    appVersion: window._androidAppVersion || APP_VERSION,
+    osName: detectOsName(),
+    osVersion: detectOsVersion(),
+    architecture: detectArchitecture(),
+    message: message,
+    occurredAt: new Date().toISOString(),
+    diagnostics: {
+      locale: navigator.language || 'unknown',
+      market: market,
+      isStandalone: window.matchMedia && window.matchMedia('(display-mode: standalone)').matches,
+    },
+    schemaVersion: FEEDBACK_SCHEMA_VERSION,
+  };
+}
+
+function selectFeedbackType(type) {
+  feedbackType = type;
+  document.getElementById('feedback-type-problem').classList.toggle('active', type === 'problem');
+  document.getElementById('feedback-type-suggestion').classList.toggle('active', type === 'suggestion');
+  updateFeedbackEnvPreview();
+}
+
+function updateFeedbackEnvPreview() {
+  const msgEl = document.getElementById('feedback-message');
+  const payload = buildFeedbackPayload(msgEl ? (msgEl.value || '(未入力)') : '(未入力)');
+  const previewEl = document.getElementById('feedback-env-preview');
+  if (previewEl) previewEl.textContent = JSON.stringify(payload, null, 2);
+}
+
+function openFeedbackModal() {
+  document.getElementById('feedback-overlay').classList.remove('hidden');
+  document.getElementById('feedback-status').textContent = '';
+  document.getElementById('feedback-status').className = 'feedback-status';
+  updateFeedbackEnvPreview();
+}
+
+function closeFeedbackModal() {
+  document.getElementById('feedback-overlay').classList.add('hidden');
+}
+
+async function submitFeedback() {
+  const messageEl = document.getElementById('feedback-message');
+  const message = messageEl.value.trim();
+  const statusEl = document.getElementById('feedback-status');
+  const submitBtn = document.getElementById('feedback-submit');
+
+  if (!message) {
+    statusEl.textContent = '内容を入力してください。';
+    statusEl.className = 'feedback-status error';
+    return;
+  }
+
+  submitBtn.disabled = true;
+  statusEl.textContent = '送信中...';
+  statusEl.className = 'feedback-status';
+
+  const payload = buildFeedbackPayload(message);
+
+  try {
+    const res = await fetch(`${FEEDBACK_API_BASE_URL}/api/v1/reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => null);
+
+    if (res.ok && data && data.status === 'ok') {
+      statusEl.textContent = '送信しました。ありがとうございます！';
+      statusEl.className = 'feedback-status success';
+      messageEl.value = '';
+      setTimeout(closeFeedbackModal, 1800);
+    } else {
+      const errMsg = (data && data.error && data.error.message) || `送信に失敗しました (HTTP ${res.status})`;
+      statusEl.textContent = errMsg;
+      statusEl.className = 'feedback-status error';
+    }
+  } catch (e) {
+    statusEl.textContent = '通信エラーが発生しました。時間をおいて再度お試しください。';
+    statusEl.className = 'feedback-status error';
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+document.getElementById('feedback-message')?.addEventListener('input', updateFeedbackEnvPreview);
 </script>
 </body>
 </html>
