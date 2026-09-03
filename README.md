@@ -59,6 +59,11 @@ git push -u origin main
 Webブラウザ（Chrome等）のタイマースロットリング対策として、Web Audio APIタイムラインによる音声事前スケジューリングとPage Visibility APIによるタブ復帰時再同期を行っています。
 ※OSスリープ中やブラウザによるタブ破棄（Discard）など、Web単体で制御できないOSレベルの省電力挙動は対象外となります。
 
+## バージョン管理
+
+`index.html` 内の `APP_VERSION`(SemVer、例: `1.0.0`)は自動更新されません。**リリース時に手動で更新してください。**
+キャッシュ更新に使う `sw.js` の `CACHE = 'stock-countdown-v6'` とは別管理です(意図的に同期していません)。
+
 ## 次のステップ
 
 - **Electron化**（Windowsデスクトップアプリ）→ `main.js` + `package.json` を追加
