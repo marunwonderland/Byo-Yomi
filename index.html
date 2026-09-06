@@ -270,6 +270,13 @@ const MARKETS = {
 
 // --- 状態変数 ---
 let market = 'tse', soundOn = true, lastSpoken = -1;
+
+// 音声設定の永続化（ページ読み込み時）
+const savedSoundOn = localStorage.getItem('soundOn');
+if (savedSoundOn !== null) {
+  soundOn = savedSoundOn === 'true';
+}
+document.getElementById('sound-track').className = 'toggle-track' + (soundOn?' on':'');
 let audioCtx = null, deferredPrompt = null, firedDate = '', speakLog = [];
 let testMode = false, testSessionIndex = 0, fakeNowSec = null, fakeDateStr = null, testRunId = 0;
 let scheduledOscillators = [], scheduledSpeechTimers = [], scheduledEventKey = null;
@@ -558,6 +565,7 @@ function setMarket(m) {
 
 function toggleSound() {
   soundOn = !soundOn;
+  localStorage.setItem('soundOn', String(soundOn));
   document.getElementById('sound-track').className = 'toggle-track' + (soundOn?' on':'');
   if (soundOn) {
     getAudioContext();
